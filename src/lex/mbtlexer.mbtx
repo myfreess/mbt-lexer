@@ -1,0 +1,302 @@
+{
+
+typealias LexBuf[T] = @lexbuf.T[T, String, Int]
+
+fn backoff[T](lexbuf : LexBuf[T], offset : Int) -> Unit {
+  lexbuf.reset(lexbuf.curr_pos() - offset)
+}
+
+// for bytes
+
+let bytes_buf : @buffer.T = @buffer.new()
+let bytes_repr_buf : StringBuilder = StringBuilder::new()
+
+fn bytes_return() -> Token {
+  let res = BYTES({ val : bytes_buf.contents(), repr : bytes_repr_buf.to_string() })
+  bytes_buf.reset()
+  bytes_repr_buf.reset()
+  return res
+}
+
+// for string
+
+let string_buf : StringBuilder = StringBuilder::new()
+let string_repr_buf : StringBuilder = StringBuilder::new()
+
+let string_interps : Ref[Array[InterpElem]] = @ref.new([])
+
+}
+
+let ascii = ['\x00'-'\x7F'];
+let newline = '\n' | '\r' | "\r\n" | '\u2028' | '\u2029';
+let digit = ['0'-'9'];
+let qua_digit = ['0'-'3'];
+let oct_digit = ['0'-'7'];
+let hex_digit = ['0'-'9'] | ['a'-'f'] | ['A'-'F'];
+
+let lower = ['a' - 'z'];
+let upper = ['A' - 'Z'];
+
+let hexidecimal = '0' ['x' 'X'] (digit | ['a'-'f'] | ['A'-'F']) (digit | ['a'-'f'] | ['A'-'F'] | '_')*;
+
+let octal = '0' ['O' 'o'] ['0'-'7'] ['0'-'7' '_']*;
+let binary = '0' ['B' 'b'] ['0' '1'] ['0' '1' '_']*;
+let decimal = digit (digit | '_')*;
+
+let integer_literal = (decimal | hexidecimal | octal | binary) ("UL"? | "U"? | 'L'? | 'N'?);
+
+let float_dec = decimal '.' (digit | '_')* (['e' 'E'] ['+' '-']? decimal)?;
+let float_hex = hexidecimal '.' (hex_digit | '_')* (['p' 'P'] ['+' '-']? decimal)?;
+
+let float_literal = float_dec | float_hex;
+
+let identifier = (lower | upper | '_') (lower | upper | digit | '_')*;
+let whitespace = ('\u0009' | '\u000B' | '\u000C' | '\u0020' | '\u00A0' | '\uFEFF' | '\u1680' | ['\u2000'-'\u200A'] | '\u202F' | '\u205F' | '\u3000');
+
+
+
+rule bytes[T](lexbuf : LexBuf[T], env~ : LexEnv) -> Token {
+  parse {
+    '"' => { 
+      bytes_return()
+    }
+    '\\' ('\\' | '\'' | '"' | 'n' | 't' | 'b' | 'r' | ' ') as repr => {
+      guard repr is ['\\', c]
+      bytes_buf.write_byte(charcode_for_backslash(c).to_byte())
+      bytes_repr_buf.write_string(repr)
+      bytes(lexbuf, env~)
+    }
+    '\\' 'x' (hex_digit hex_digit as hex) as repr => {
+      guard char_for_hex_escape(hex) is Some(codep)
+      bytes_buf.write_byte(codep.to_byte())
+      bytes_repr_buf.write_string(repr)
+      bytes(lexbuf, env~)
+    }
+    '\\' 'x' _ _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), InvalidEscapeSequence(repr))
+      bytes(lexbuf, env~)
+    }
+    '\\' 'o' (qua_digit oct_digit oct_digit as oct) as repr => {
+      guard char_for_oct_escape(oct) is Some(codep)
+      bytes_buf.write_byte(codep.to_byte())
+      bytes_repr_buf.write_string(repr)
+      bytes(lexbuf, env~)
+    }
+    '\\' 'o' _ _ _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), InvalidEscapeSequence(repr))
+      bytes(lexbuf, env~)
+    }
+    '\\' _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), InvalidEscapeSequence(repr))
+      bytes(lexbuf, env~)
+    }
+    eof as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), UnterminatedBytes)
+      bytes_return()
+    }
+    '\r' | '\n' as repr => {
+      // we need insert a NEWLINE token here, so back off to main tokenizer
+      backoff(lexbuf, 1)
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), UnterminatedBytes)
+      bytes_return()
+    }
+    ascii as repr => {
+      guard repr is [c]
+      bytes_buf.write_byte(c.to_uint().to_byte())
+      bytes_repr_buf.write_string(repr)
+      bytes(lexbuf, env~)
+    }
+    _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), NonAsciiInBytes(repr))
+      bytes(lexbuf, env~)
+    }
+  }
+}
+
+rule interp_handle[T](lexbuf : LexBuf[T], env~ : LexEnv) -> Int {
+  parse {
+    whitespace* '}' as repr => {
+      $startpos(repr)
+    }
+    eof as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), UnterminatedString)
+      $startpos(repr)
+    }
+    '\r' | '\n' as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), UnterminatedStringInVariableInterploation)
+      backoff(lexbuf, 1)
+      $startpos(repr)
+    }
+    eof as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), UnterminatedStringInVariableInterploation)
+      $startpos(repr)
+    }
+    _ as repr => {
+      guard repr is [c]
+      let repr_is_valid_interp = is_valid_unicode_scalar(c.to_uint()) && c != '\n' && c != '"' && c != '{'
+      if repr_is_valid_interp {
+        string_buf.write_char(c)
+        unicode_ident(lexbuf, string_buf)
+        interp_handle(lexbuf, env~)
+      } else {
+        env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), IllegalCharacter($startpos(repr)))
+        interp_handle(lexbuf, env~)
+      }
+    }
+  }
+}
+
+rule normal[T](lexbuf : LexBuf[T], env~ : LexEnv, multiline_string~ : Bool, startpos~ : Int) -> Unit {
+  parse {
+    '"' as repr => {
+      if multiline_string {
+        string_buf.write_char('"')
+        string_repr_buf.write_char('"')
+        normal(lexbuf, env~, multiline_string~, startpos~)
+      } else {
+        if not(string_buf.is_empty()) {
+          string_interps.val.push(
+            InterpLit(
+              c=string_buf.to_string(),
+              repr=string_repr_buf.to_string(),
+              loc=Loc::{ start : env.make_position(startpos), end : env.make_position($endpos(repr)) }
+            )
+          )
+        }
+      }
+    }
+    '\\' ('\\' | '\'' | '"' | 'n' | 't' | 'b' | 'r' | ' ') as repr => {
+      guard repr is ['\\', c]
+      string_buf.write_char(Char::from_int(charcode_for_backslash(c).to_int()))
+      string_repr_buf.write_string(repr)
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'x' (hex_digit hex_digit as hex) as repr => {
+      guard char_for_hex_escape(hex) is Some(codep)
+      string_buf.write_char(Char::from_int(codep.to_int()))
+      string_repr_buf.write_string(repr)
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'x' _ _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), InvalidEscapeSequence(repr))
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'o' (qua_digit oct_digit oct_digit as oct) as repr => {
+      guard char_for_oct_escape(oct) is Some(codep)
+      string_buf.write_char(Char::from_int(codep.to_int()))
+      string_repr_buf.write_string(repr)
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'o' _ _ _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr), InvalidEscapeSequence(repr))
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'o' (hex_digit hex_digit hex_digit hex_digit as hex) as repr => {
+      guard char_for_hex_escape(hex) is Some(codep)
+      if 0xD800U <= codep && codep <= 0xDBFFU {
+        ...
+      } else if is_valid_unicode_scalar(codep) {
+        string_buf.write_char(Char::from_int(codep.to_int()))
+        string_repr_buf.write_string(repr)
+      } else {
+        string_repr_buf.write_string(repr)
+        env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),InvalidEscapeSequence(repr))
+      }
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'u' '{' (hex_digit+ as hex) '}' as repr => {
+      let codep = char_for_hex_escape(hex)
+      match codep {
+        None => {
+          env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),InvalidEscapeSequence(repr))
+        }
+        Some(codep) => {
+          string_buf.write_char(Char::from_int(codep.to_int()))
+        }
+      }
+      string_repr_buf.write_string(repr)
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' 'u' '{' [^ '}' '\r' '\n']* '}' as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),InvalidEscapeSequence(repr))
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' '{' whitespace* as repr => {
+      if not(string_buf.is_empty()) {
+        string_interps.val.push(
+          InterpLit(
+            c=string_buf.to_string(),
+            repr=string_repr_buf.to_string(),
+            loc=Loc::{ start : env.make_position(startpos), end : env.make_position($endpos(repr)) }
+          )
+        )
+      }
+      string_buf.reset()
+      string_repr_buf.reset()
+      let apos = $endpos(repr)
+      let bpos = interp_handle(lexbuf, env~)
+      let loc = Loc::{ start: env.make_position(apos), end : env.make_position(bpos) }
+      if string_buf.is_empty() {
+        env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),InterpMissingExpression)
+      } else {
+        let source = string_buf.to_string()
+        string_interps.val.push(
+          InterpSource(
+            InterpSource::{ source, loc }
+          )
+        )
+      }
+      let start_pos = lexbuf.curr_pos()
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    '\\' _ as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),InvalidEscapeSequence(repr))
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+    eof as repr => {
+      env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),UnterminatedString)
+      if not(string_buf.is_empty()) {
+        string_interps.val.push(
+          InterpLit(
+            c=string_buf.to_string(),
+            repr=string_repr_buf.to_string(),
+            loc=Loc::{ start : env.make_position(startpos), end : env.make_position($endpos(repr)) }
+          )
+        )
+      }
+    }
+    '\r' '\n' as repr => {
+      // we need insert a NEWLINE token here, so back off to main tokenizer
+      backoff(lexbuf, 1)
+      if not(multiline_string) {
+        env.add_lexing_error(loc_start=$startpos(repr), loc_end = $endpos(repr),UnterminatedString)
+      }
+      if not(string_buf.is_empty()) {
+        string_interps.val.push(
+          InterpLit(
+            c=string_buf.to_string(),
+            repr=string_repr_buf.to_string(),
+            loc=Loc::{ start : env.make_position(startpos), end : env.make_position($endpos(repr)) }
+          )
+        )
+      }
+    }
+    _ as repr => {
+      string_buf.write_string(repr)
+      string_repr_buf.write_string(repr)
+      normal(lexbuf, env~, multiline_string~, startpos~)
+    }
+  }
+}
+
+rule string[T](lexbuf : LexBuf[T], env~ : LexEnv, multiline_string~ : Bool, startpos~ : Int) -> Array[InterpElem] {
+  parse {
+    _ as repr => {
+      ...
+    }
+  }
+}
+
+{
+
+}

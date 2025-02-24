@@ -1,0 +1,18 @@
+{
+    "pre-build": [
+        {
+            "command": "node $mod_dir/.mooncakes/moonbitlang/yacc/boot/moonyacc.js $input --mode only-tokens -o $output",
+            "input": "mbtparser.mbty",
+            "output": "mbttokens.mbt"
+        },
+        {
+            "command": "node $mod_dir/.mooncakes/moonbitlang/lex/boot/snapshot/moonlex.js $input -o $output",
+            "input": "mbtlexer.mbtx",
+            "output": "mbtlexer.mbt"
+        }
+    ],
+    "import": [
+      "moonbitlang/ulex-runtime/lexbuf",
+      "moonbitlang/ulex-runtime/lexengine"
+    ]
+}
