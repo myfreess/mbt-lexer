@@ -1,0 +1,12 @@
+fn init {
+  println('\x78')
+  println("\x78")
+  println('\o377')
+  println("\o377")
+  println('\u6211')
+  println("\u6211")
+  let empty = ""
+  println("\{empty}\u6211")
+  println('\u{20BB7}')
+  println("\u{20BB7}")
+}

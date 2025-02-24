@@ -1,0 +1,10 @@
+fn init {
+  let s =   "\uD835\uDD04"
+  println(s)
+  println(s.length()) 
+  // returns 2 
+  // since js returns the length of code array
+  for i in s {
+    println(i)
+  }
+}
