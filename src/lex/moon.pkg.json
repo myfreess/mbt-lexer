@@ -1,0 +1,21 @@
+{
+    "pre-build": [
+        {
+            "command": "node $mod_dir/.mooncakes/moonbitlang/ulex/boot/snapshot/moonlex.js $input -o $output",
+            "input": "mbtlexer.mbtx",
+            "output": "mbtlexer.mbt"
+        }
+    ],
+    "import": [
+      "moonbitlang/ulex-runtime/lexbuf",
+      "moonbitlang/ulex-runtime/lexengine"
+    ],
+    "wbtest-import": [
+      "moonbitlang/x/fs"
+    ],
+    "link": {
+        "native": {
+          "cc": "gcc"
+        }
+    }
+}
