@@ -1,0 +1,8 @@
+{
+    "is-main": true,
+    "import":[
+        "myfreess/mbt-lexer/lex",
+        "moonbitlang/x/fs",
+        "moonbitlang/x/sys"
+    ]
+}
